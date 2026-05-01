@@ -1,0 +1,18 @@
+name = "iit-jee-question-bank-api"
+main = "workers/src/index.js"
+compatibility_date = "2026-05-01"
+
+# Cloudflare Pages will host the React app from web/.
+# This Worker is intended for /api/* routes.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "iit-jee-question-bank"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "ASSETS_BUCKET"
+bucket_name = "iit-jee-question-bank-assets"
+
+[vars]
+APP_ENV = "production"

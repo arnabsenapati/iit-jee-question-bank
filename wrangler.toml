@@ -8,7 +8,7 @@ compatibility_date = "2026-05-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "iit-jee-question-bank"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "a1b50ac4-48c9-400a-8034-67a4f9b2d128"
 
 [[r2_buckets]]
 binding = "ASSETS_BUCKET"

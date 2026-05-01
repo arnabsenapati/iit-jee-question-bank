@@ -12,25 +12,35 @@ Create a Pages project from GitHub.
 - Build command: `npm run build`
 - Build output directory: `dist`
 
+Set this Pages environment variable for production:
+
+```txt
+VITE_API_BASE_URL=https://iit-jee-question-bank-api.senapati-arnab.workers.dev
+```
+
 ## 2. Cloudflare D1
 
-Create a D1 database named:
+D1 database:
 
 ```txt
 iit-jee-question-bank
 ```
 
+Database ID:
+
+```txt
+a1b50ac4-48c9-400a-8034-67a4f9b2d128
+```
+
 Apply migration:
 
 ```bash
-npx wrangler d1 migrations apply iit-jee-question-bank
+npx wrangler d1 migrations apply iit-jee-question-bank --remote
 ```
-
-Then update `wrangler.toml` with the generated D1 `database_id`.
 
 ## 3. Cloudflare R2
 
-Create an R2 bucket named:
+R2 bucket:
 
 ```txt
 iit-jee-question-bank-assets
@@ -45,6 +55,12 @@ This bucket is intended for:
 - snapshots/backups
 
 ## 4. Worker API
+
+Worker URL:
+
+```txt
+https://iit-jee-question-bank-api.senapati-arnab.workers.dev
+```
 
 The Worker entry point is:
 

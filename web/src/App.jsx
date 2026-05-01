@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 
+const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+
+const apiUrl = (path) => {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return API_BASE_URL ? `${API_BASE_URL}${normalizedPath}` : normalizedPath
+}
+
 const apiGet = async (path) => {
-  const response = await fetch(path)
+  const response = await fetch(apiUrl(path))
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`)
   }
@@ -52,6 +59,9 @@ function App() {
         <h1>IIT JEE Question Bank</h1>
         <p className="subtitle">
           React/Vite frontend on Cloudflare Pages, Worker API, D1 database, and R2 file storage.
+        </p>
+        <p className="api-note">
+          API: {API_BASE_URL || 'same-origin /api'}
         </p>
       </section>
 

@@ -1,0 +1,89 @@
+name: Provision Cloudflare Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_d1:
+        description: "Create D1 database if missing"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      create_r2:
+        description: "Create R2 bucket if missing"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  provision:
+    name: Provision Cloudflare Resources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check Cloudflare secrets
+        run: |
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "Missing CLOUDFLARE_API_TOKEN secret" >&2
+            exit 1
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "Missing CLOUDFLARE_ACCOUNT_ID secret" >&2
+            exit 1
+          fi
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler
+
+      - name: Show account resources before provisioning
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Existing D1 databases:"
+          npx wrangler d1 list || true
+          echo "Existing R2 buckets:"
+          npx wrangler r2 bucket list || true
+
+      - name: Create D1 database
+        if: inputs.create_d1 == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Creating D1 database iit-jee-question-bank if it does not already exist..."
+          npx wrangler d1 create iit-jee-question-bank || true
+
+      - name: Create R2 bucket
+        if: inputs.create_r2 == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Creating R2 bucket iit-jee-question-bank-assets if it does not already exist..."
+          npx wrangler r2 bucket create iit-jee-question-bank-assets || true
+
+      - name: Show account resources after provisioning
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "D1 databases after provisioning:"
+          npx wrangler d1 list
+          echo "R2 buckets after provisioning:"
+          npx wrangler r2 bucket list
+          echo "Copy the database_id for iit-jee-question-bank from the D1 output and add it to wrangler.toml or as a repository secret later."

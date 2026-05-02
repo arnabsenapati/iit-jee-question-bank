@@ -1,0 +1,105 @@
+name: Import D1 From SQLite
+
+on:
+  workflow_dispatch:
+    inputs:
+      google_drive_file_id:
+        description: "Google Drive file ID of the old SQLite .db file"
+        required: true
+        type: string
+      reset_before_import:
+        description: "Delete existing migrated rows before import"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      import_extras:
+        description: "Import configs, tags, lists, and exams after questions"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  import-d1:
+    name: Import SQLite data into Cloudflare D1
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Cloudflare secrets
+        run: |
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "Missing CLOUDFLARE_API_TOKEN secret" >&2
+            exit 1
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "Missing CLOUDFLARE_ACCOUNT_ID secret" >&2
+            exit 1
+          fi
+
+      - name: Install tools
+        run: |
+          npm install --no-save wrangler
+          python -m pip install --upgrade pip
+          python -m pip install gdown
+
+      - name: Download SQLite DB from Google Drive
+        run: |
+          gdown --id "${{ inputs.google_drive_file_id }}" -O question_bank.db
+          ls -lh question_bank.db
+
+      - name: Apply D1 schema migrations first
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply iit-jee-question-bank --remote
+
+      - name: Generate D1 SQL chunks
+        run: |
+          RESET_FLAG=""
+          EXTRAS_FLAG=""
+          if [ "${{ inputs.reset_before_import }}" = "true" ]; then RESET_FLAG="--reset"; fi
+          if [ "${{ inputs.import_extras }}" = "true" ]; then EXTRAS_FLAG="--extras"; fi
+          python scripts/d1_import_sqlite.py --db question_bank.db --out migration_out --chunk-size 2000 $RESET_FLAG $EXTRAS_FLAG
+          cat migration_out/MANIFEST.json
+
+      - name: Import generated SQL chunks into remote D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          manifest = json.load(open('migration_out/MANIFEST.json'))
+          for chunk in manifest['chunks']:
+              path = 'migration_out/' + chunk
+              print(f'\n=== Importing {path} ===', flush=True)
+              subprocess.check_call(['npx', 'wrangler', 'd1', 'execute', 'iit-jee-question-bank', '--remote', '--file', path])
+          PY
+
+      - name: Verify D1 counts
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 execute iit-jee-question-bank --remote --command "SELECT COUNT(*) AS questions FROM questions;"
+          npx wrangler d1 execute iit-jee-question-bank --remote --command "SELECT s.name, COUNT(q.id) AS count FROM subjects s LEFT JOIN questions q ON q.subject_id=s.id GROUP BY s.id, s.name ORDER BY s.id;"

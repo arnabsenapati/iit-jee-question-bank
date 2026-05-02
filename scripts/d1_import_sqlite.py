@@ -17,7 +17,8 @@ TAG_COLUMNS = ["id", "name", "color", "created_at"]
 CONFIG_COLUMNS = ["key", "value_json", "updated_at"]
 EXAM_COLUMNS = ["id", "name", "list_name", "imported_at", "evaluated", "evaluated_at", "total_questions", "answered", "correct", "wrong", "score", "percent", "source_path", "payload_json"]
 EXAM_QUESTION_COLUMNS = ["id", "exam_id", "q_index", "question_json", "response_json", "correct", "answered", "score", "eval_status", "eval_comment"]
-MAX_INLINE_TEXT_BYTES = 700_000
+MAX_INLINE_TEXT_BYTES = 20_000
+MAX_STMT_BYTES = 80_000
 
 
 def q(value):
@@ -36,14 +37,25 @@ def d1_safe_json(value, label):
     if value is None:
         return None
     text = str(value)
-    if len(text.encode("utf-8")) <= MAX_INLINE_TEXT_BYTES:
+    original_bytes = len(text.encode("utf-8"))
+    if original_bytes <= MAX_INLINE_TEXT_BYTES:
         return text
     return json.dumps({
         "migration_note": "Original JSON omitted because it exceeds Cloudflare D1 single-statement import limits.",
         "original_field": label,
-        "original_bytes": len(text.encode("utf-8")),
+        "original_bytes": original_bytes,
         "follow_up": "Move this payload to R2 in a later migration if it is still needed."
     }, separators=(",", ":"))
+
+
+def d1_safe_text(value, label):
+    if value is None:
+        return None
+    text = str(value)
+    original_bytes = len(text.encode("utf-8"))
+    if original_bytes <= MAX_INLINE_TEXT_BYTES:
+        return text
+    return f"[migration omitted large text: {label}, {original_bytes} bytes; move to R2 later if needed]"
 
 
 def has_table(conn, table):
@@ -70,10 +82,15 @@ def write_file(path, statements):
         f.write("PRAGMA foreign_keys = ON;\n")
 
 
-def write_sized_chunks(out_dir, prefix, statements, manifest, max_bytes=1_500_000):
+def write_sized_chunks(out_dir, prefix, statements, manifest, max_bytes=500_000):
     batch, size, part = [], 0, 1
     for stmt in statements:
         stmt_size = len(stmt.encode("utf-8")) + 1
+        if stmt_size > MAX_STMT_BYTES:
+            manifest.setdefault("warnings", []).append(
+                f"Large statement of {stmt_size} bytes remained in {prefix}; it was skipped to avoid SQLITE_TOOBIG."
+            )
+            continue
         if batch and size + stmt_size > max_bytes:
             fname = out_dir / f"{prefix}_{part:02d}.sql"
             write_file(fname, batch)
@@ -88,7 +105,8 @@ def write_sized_chunks(out_dir, prefix, statements, manifest, max_bytes=1_500_00
 
 
 def insert_stmt(table, columns, values):
-    return f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({', '.join(q(v) for v in values)});"
+    stmt = f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({', '.join(q(v) for v in values)});"
+    return stmt
 
 
 def select_mapped(conn, table, target_cols, transforms=None):
@@ -119,7 +137,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(args.db)
 
-    manifest = {"chunks": [], "counts": {}, "notes": []}
+    manifest = {"chunks": [], "counts": {}, "notes": [], "warnings": []}
 
     reset = []
     if args.reset:
@@ -201,15 +219,19 @@ def main():
                 extra_stmts.append(insert_stmt("question_list_items", cols, vals))
             manifest["counts"]["question_list_items"] = conn.execute("SELECT COUNT(*) FROM question_list_items").fetchone()[0]
         if has_table(conn, "exams"):
-            transforms = {"payload_json": lambda d: d1_safe_json(d.get("payload_json"), "exams.payload_json")}
+            transforms = {
+                "payload_json": lambda d: d1_safe_json(d.get("payload_json"), "exams.payload_json"),
+                "source_path": lambda d: d1_safe_text(d.get("source_path"), "exams.source_path"),
+            }
             for vals in select_mapped(conn, "exams", EXAM_COLUMNS, transforms):
                 extra_stmts.append(insert_stmt("exams", EXAM_COLUMNS, vals))
             manifest["counts"]["exams"] = conn.execute("SELECT COUNT(*) FROM exams").fetchone()[0]
-            manifest["notes"].append("Very large exams.payload_json values are replaced by migration notes. Move them to R2 later if needed.")
+            manifest["notes"].append("Large exams.payload_json/source_path values are replaced by migration notes. Move them to R2 later if needed.")
         if has_table(conn, "exam_questions"):
             transforms = {
                 "question_json": lambda d: d1_safe_json(d.get("question_json"), "exam_questions.question_json"),
                 "response_json": lambda d: d1_safe_json(d.get("response_json"), "exam_questions.response_json"),
+                "eval_comment": lambda d: d1_safe_text(d.get("eval_comment"), "exam_questions.eval_comment"),
             }
             for vals in select_mapped(conn, "exam_questions", EXAM_QUESTION_COLUMNS, transforms):
                 extra_stmts.append(insert_stmt("exam_questions", EXAM_QUESTION_COLUMNS, vals))

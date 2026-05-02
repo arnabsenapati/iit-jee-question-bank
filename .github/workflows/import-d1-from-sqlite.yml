@@ -64,8 +64,20 @@ jobs:
 
       - name: Download SQLite DB from Google Drive
         run: |
-          gdown --id "${{ inputs.google_drive_file_id }}" -O question_bank.db
+          gdown "${{ inputs.google_drive_file_id }}" -O question_bank.db
           ls -lh question_bank.db
+          python - <<'PY'
+          import os, sqlite3, sys
+          path = 'question_bank.db'
+          if os.path.getsize(path) < 1024:
+              raise SystemExit('Downloaded file is too small. Check Google Drive sharing: Anyone with the link -> Viewer.')
+          try:
+              conn = sqlite3.connect(path)
+              conn.execute('SELECT name FROM sqlite_master LIMIT 1').fetchall()
+              conn.close()
+          except Exception as e:
+              raise SystemExit(f'Downloaded file is not a valid SQLite DB. Check Drive sharing/download permissions. Error: {e}')
+          PY
 
       - name: Apply D1 schema migrations first
         env:

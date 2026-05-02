@@ -17,6 +17,7 @@ TAG_COLUMNS = ["id", "name", "color", "created_at"]
 CONFIG_COLUMNS = ["key", "value_json", "updated_at"]
 EXAM_COLUMNS = ["id", "name", "list_name", "imported_at", "evaluated", "evaluated_at", "total_questions", "answered", "correct", "wrong", "score", "percent", "source_path", "payload_json"]
 EXAM_QUESTION_COLUMNS = ["id", "exam_id", "q_index", "question_json", "response_json", "correct", "answered", "score", "eval_status", "eval_comment"]
+MAX_INLINE_TEXT_BYTES = 700_000
 
 
 def q(value):
@@ -29,6 +30,20 @@ def q(value):
     if isinstance(value, (int, float)):
         return str(value)
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def d1_safe_json(value, label):
+    if value is None:
+        return None
+    text = str(value)
+    if len(text.encode("utf-8")) <= MAX_INLINE_TEXT_BYTES:
+        return text
+    return json.dumps({
+        "migration_note": "Original JSON omitted because it exceeds Cloudflare D1 single-statement import limits.",
+        "original_field": label,
+        "original_bytes": len(text.encode("utf-8")),
+        "follow_up": "Move this payload to R2 in a later migration if it is still needed."
+    }, separators=(",", ":"))
 
 
 def has_table(conn, table):
@@ -53,6 +68,23 @@ def write_file(path, statements):
             if not s.endswith("\n"):
                 f.write("\n")
         f.write("PRAGMA foreign_keys = ON;\n")
+
+
+def write_sized_chunks(out_dir, prefix, statements, manifest, max_bytes=1_500_000):
+    batch, size, part = [], 0, 1
+    for stmt in statements:
+        stmt_size = len(stmt.encode("utf-8")) + 1
+        if batch and size + stmt_size > max_bytes:
+            fname = out_dir / f"{prefix}_{part:02d}.sql"
+            write_file(fname, batch)
+            manifest["chunks"].append(fname.name)
+            batch, size, part = [], 0, part + 1
+        batch.append(stmt)
+        size += stmt_size
+    if batch:
+        fname = out_dir / f"{prefix}_{part:02d}.sql"
+        write_file(fname, batch)
+        manifest["chunks"].append(fname.name)
 
 
 def insert_stmt(table, columns, values):
@@ -87,7 +119,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(args.db)
 
-    manifest = {"chunks": [], "counts": {}}
+    manifest = {"chunks": [], "counts": {}, "notes": []}
 
     reset = []
     if args.reset:
@@ -147,6 +179,7 @@ def main():
         extra_stmts = []
         if has_table(conn, "configs"):
             for vals in select_mapped(conn, "configs", CONFIG_COLUMNS):
+                vals[1] = d1_safe_json(vals[1], "configs.value_json")
                 extra_stmts.append(insert_stmt("configs", CONFIG_COLUMNS, vals))
             manifest["counts"]["configs"] = conn.execute("SELECT COUNT(*) FROM configs").fetchone()[0]
         if has_table(conn, "tags"):
@@ -155,6 +188,7 @@ def main():
             manifest["counts"]["tags"] = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
         if has_table(conn, "question_lists"):
             transforms = {
+                "metadata_json": lambda d: d1_safe_json(d.get("metadata_json"), "question_lists.metadata_json"),
                 "archived": lambda d: int(bool(json.loads(d.get("metadata_json") or "{}").get("archived", 0))) if d.get("metadata_json") else 0,
                 "updated_at": lambda d: d.get("updated_at") or d.get("created_at"),
             }
@@ -167,17 +201,21 @@ def main():
                 extra_stmts.append(insert_stmt("question_list_items", cols, vals))
             manifest["counts"]["question_list_items"] = conn.execute("SELECT COUNT(*) FROM question_list_items").fetchone()[0]
         if has_table(conn, "exams"):
-            for vals in select_mapped(conn, "exams", EXAM_COLUMNS):
+            transforms = {"payload_json": lambda d: d1_safe_json(d.get("payload_json"), "exams.payload_json")}
+            for vals in select_mapped(conn, "exams", EXAM_COLUMNS, transforms):
                 extra_stmts.append(insert_stmt("exams", EXAM_COLUMNS, vals))
             manifest["counts"]["exams"] = conn.execute("SELECT COUNT(*) FROM exams").fetchone()[0]
+            manifest["notes"].append("Very large exams.payload_json values are replaced by migration notes. Move them to R2 later if needed.")
         if has_table(conn, "exam_questions"):
-            for vals in select_mapped(conn, "exam_questions", EXAM_QUESTION_COLUMNS):
+            transforms = {
+                "question_json": lambda d: d1_safe_json(d.get("question_json"), "exam_questions.question_json"),
+                "response_json": lambda d: d1_safe_json(d.get("response_json"), "exam_questions.response_json"),
+            }
+            for vals in select_mapped(conn, "exam_questions", EXAM_QUESTION_COLUMNS, transforms):
                 extra_stmts.append(insert_stmt("exam_questions", EXAM_QUESTION_COLUMNS, vals))
             manifest["counts"]["exam_questions"] = conn.execute("SELECT COUNT(*) FROM exam_questions").fetchone()[0]
         if extra_stmts:
-            fname = out / "99_extras.sql"
-            write_file(fname, extra_stmts)
-            manifest["chunks"].append(fname.name)
+            write_sized_chunks(out, "99_extras", extra_stmts, manifest)
 
     with open(out / "MANIFEST.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

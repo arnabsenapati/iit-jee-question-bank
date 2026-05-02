@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import sqlite3
 from pathlib import Path
 
@@ -41,13 +40,19 @@ def table_cols(conn, table):
 
 
 def write_file(path, statements):
+    """Write D1-safe SQL.
+
+    Cloudflare D1 remote import rejects explicit BEGIN/COMMIT transaction SQL.
+    Wrangler already handles the import transaction, so each chunk must contain
+    only normal statements.
+    """
     with open(path, "w", encoding="utf-8") as f:
-        f.write("PRAGMA foreign_keys = OFF;\nBEGIN TRANSACTION;\n")
+        f.write("PRAGMA foreign_keys = OFF;\n")
         for s in statements:
             f.write(s)
             if not s.endswith("\n"):
                 f.write("\n")
-        f.write("COMMIT;\nPRAGMA foreign_keys = ON;\n")
+        f.write("PRAGMA foreign_keys = ON;\n")
 
 
 def insert_stmt(table, columns, values):
